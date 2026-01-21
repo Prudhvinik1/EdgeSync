@@ -6,7 +6,7 @@ CREATE TABLE sync_events (
     state_key VARCHAR(255),
     sequence_number BIGSERIAL,
     payload BYTEA,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX idx_sync_events_account_id ON sync_events(account_id, sequence_number);
