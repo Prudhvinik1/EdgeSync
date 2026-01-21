@@ -39,3 +39,6 @@ logs/
 # Build output
 /dist/
 /build/
+
+# Cursor IDE
+.cursor/
