@@ -6,9 +6,10 @@ A secure multi-device sync service built with Go. EdgeSync enables real-time syn
 
 - **Go 1.21+** - Backend runtime
 - **PostgreSQL 15** - Primary database
-- **Redis 7** - Caching and presence
+- **Redis 7** - Session management & presence
 - **Chi Router** - HTTP routing
 - **pgx** - PostgreSQL driver
+- **go-redis** - Redis client
 - **golang-jwt** - JWT authentication
 
 ## Project Structure
@@ -17,18 +18,25 @@ A secure multi-device sync service built with Go. EdgeSync enables real-time syn
 EdgeSync/
 ├── cmd/
 │   └── server/
-│       └── main.go              # Application entry point (TODO)
+│       └── main.go                  # Application entry point
 ├── internal/
 │   ├── config/
-│   │   └── config.go            # Environment config (TODO)
+│   │   └── config.go                # Environment configuration
 │   ├── database/
-│   │   ├── postgres.go          # Postgres connection (TODO)
-│   │   └── redis.go             # Redis connection (TODO)
-│   └── models/
-│       ├── account.go           # User account model
-│       ├── device.go            # Device model
-│       ├── encrypted_state.go   # Encrypted state model
-│       └── sync_event.go        # Sync event model
+│   │   ├── postgres.go              # Postgres connection pool
+│   │   └── redis.go                 # Redis client
+│   ├── models/
+│   │   ├── account.go               # User account
+│   │   ├── device.go                # Device
+│   │   ├── encrypted_state.go       # Encrypted state blob
+│   │   ├── session.go               # JWT session
+│   │   ├── sync_event.go            # Sync event log
+│   │   └── presence.go              # Device presence
+│   └── repositories/
+│       ├── interfaces.go            # Repository interfaces
+│       ├── account_repo.go          # Account CRUD (Postgres)
+│       ├── device_repo.go           # Device CRUD (Postgres)
+│       └── session_repo.go          # Session management (Redis)
 ├── migrations/
 │   ├── 000001_create_accounts.up.sql
 │   ├── 000001_create_accounts.down.sql
@@ -39,10 +47,39 @@ EdgeSync/
 │   ├── 000004_create_sync_events.up.sql
 │   └── 000004_create_sync_events.down.sql
 ├── docker-compose.yaml
+├── .env.example
 ├── go.mod
 ├── go.sum
 └── README.md
 ```
+
+## Architecture
+
+### Repository Pattern
+
+EdgeSync uses the repository pattern to separate data access from business logic:
+
+```
+HTTP Handlers → Services → Repository Interfaces → Implementations
+                                    ↓
+                          ┌─────────┴─────────┐
+                          │                   │
+                    PostgresRepo          RedisRepo
+                          │                   │
+                          ▼                   ▼
+                      PostgreSQL           Redis
+```
+
+### Session Storage with Redis
+
+Sessions are stored in Redis with automatic TTL expiration. To enable querying sessions by account, we maintain a secondary index:
+
+```
+session:{id}                    → Session JSON (with TTL)
+account:{accountID}:sessions    → Set of session IDs
+```
+
+**Design Decision:** We use lazy cleanup for expired session references in the secondary index. When listing sessions for an account, we check if each session still exists and remove stale references. This approach is simple, requires no background jobs, and handles the eventual consistency naturally.
 
 ## Getting Started
 
@@ -80,16 +117,26 @@ EdgeSync/
    migrate -path ./migrations -database 'postgres://postgres:postgres@localhost:5432/edgesync?sslmode=disable' up
    ```
 
-6. **Install Go dependencies**
+6. **Create .env file**
    ```bash
-   go mod download
+   cp .env.example .env
+   # Edit .env with your settings
+   ```
+
+7. **Run the server**
+   ```bash
+   go run cmd/server/main.go
+   ```
+
+8. **Test health endpoint**
+   ```bash
+   curl http://localhost:8080/health
+   # Returns: OK
    ```
 
 ## Database Schema
 
 ### accounts
-Stores user account information.
-
 | Column | Type | Description |
 |--------|------|-------------|
 | id | UUID | Primary key |
@@ -97,10 +144,9 @@ Stores user account information.
 | password_hash | VARCHAR(255) | Bcrypt hashed password |
 | created_at | TIMESTAMPTZ | Account creation time |
 | updated_at | TIMESTAMPTZ | Last update time |
+| deleted_at | TIMESTAMPTZ | Soft delete timestamp |
 
 ### devices
-Registered devices for each account.
-
 | Column | Type | Description |
 |--------|------|-------------|
 | id | UUID | Primary key |
@@ -112,8 +158,6 @@ Registered devices for each account.
 | revoked_at | TIMESTAMPTZ | When device was revoked |
 
 ### encrypted_states
-Stores encrypted user data blobs.
-
 | Column | Type | Description |
 |--------|------|-------------|
 | id | UUID | Primary key |
@@ -124,8 +168,6 @@ Stores encrypted user data blobs.
 | version | BIGINT | Optimistic locking version |
 
 ### sync_events
-Event log for tracking all sync operations.
-
 | Column | Type | Description |
 |--------|------|-------------|
 | id | UUID | Primary key |
@@ -135,9 +177,34 @@ Event log for tracking all sync operations.
 | state_key | VARCHAR(255) | Affected state key |
 | sequence_num | BIGSERIAL | Ordered sequence number |
 
-## Development
+## Development Progress
 
-### Useful Commands
+### Phase 1: Project Setup ✅
+- [x] Go module with Chi router
+- [x] Docker Compose (Postgres 15 + Redis 7)
+- [x] Database migrations
+- [x] Environment configuration
+- [x] Health check endpoint
+
+### Phase 2: Models & Repositories (In Progress)
+- [x] All domain models
+- [x] Repository interfaces
+- [x] Account repository (Postgres)
+- [x] Device repository (Postgres)
+- [x] Session repository (Redis)
+- [ ] State repository (Postgres)
+- [ ] SyncEvent repository (Postgres)
+- [ ] Presence repository (Redis)
+
+### Phase 3-8: Coming Soon
+- Authentication & device management
+- Encrypted state sync with optimistic locking
+- Presence system
+- WebSocket & fan-out
+- Demo frontend
+- Docker & documentation
+
+## Useful Commands
 
 ```bash
 # Start services
@@ -152,13 +219,16 @@ docker-compose logs -f
 # Connect to Postgres
 docker exec -it edgesync-postgres-1 psql -U postgres -d edgesync
 
+# Connect to Redis
+docker exec -it edgesync-redis-1 redis-cli
+
 # Migration commands
-migrate -path ./migrations -database '...' up      # Apply all
-migrate -path ./migrations -database '...' down 1  # Rollback one
-migrate -path ./migrations -database '...' version # Check version
+migrate -path ./migrations -database '...' up        # Apply all
+migrate -path ./migrations -database '...' down 1    # Rollback one
+migrate -path ./migrations -database '...' version   # Check version
+migrate -path ./migrations -database '...' force N   # Force version
 ```
 
 ## License
 
 MIT
-
