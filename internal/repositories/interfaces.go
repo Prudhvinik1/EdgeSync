@@ -24,7 +24,6 @@ type DeviceRepository interface {
 }
 
 type EncryptedStateRepository interface {
-	Create(ctx context.Context, state *models.EncryptedState) error
 	GetByID(ctx context.Context, id uuid.UUID) (*models.EncryptedState, error)
 	GetByAccountID(ctx context.Context, accountID uuid.UUID) ([]*models.EncryptedState, error)
 	GetByKey(ctx context.Context, accountID uuid.UUID, key string) (*models.EncryptedState, error)
